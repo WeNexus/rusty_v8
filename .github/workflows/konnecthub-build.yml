@@ -1,0 +1,131 @@
+name: konnecthub-build
+
+# Builds the patched (v8::Locker) rusty_v8 static library for the single target
+# edge-runtime/konnecthub needs — x86_64-unknown-linux-gnu, release, simdutf —
+# and publishes it (plus the matching src_binding.rs) as a GitHub Release asset.
+#
+# Feature set matches Deno v2.8.3's pin:
+#   v8 = { version = "149.3.0", default-features = false, features = ["simdutf"] }
+#
+# The release MUST be tagged `v{crate-version}` (i.e. `v149.3.0`) so that the
+# rusty_v8 build script can find the assets via RUSTY_V8_MIRROR. Consume from
+# edge-runtime with a single env var (no local V8 source build, no manual
+# src_binding handling — build.rs auto-downloads both from {mirror}/v149.3.0/):
+#   RUSTY_V8_MIRROR=https://github.com/<owner>/rusty_v8/releases/download
+# (build.rs fetches librusty_v8_simdutf_release_<target>.a.gz and the matching
+#  src_binding_simdutf_release_<target>.rs from that base + /v149.3.0/.)
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to create/update (must be v<crate-version>, e.g. v149.3.0)"
+        required: true
+        default: "v149.3.0"
+  push:
+    tags:
+      # `v149.3.0` (matches the crate version → RUSTY_V8_MIRROR path) and any
+      # explicit konnecthub-suffixed tag for one-off builds.
+      - "v[0-9]+.[0-9]+.[0-9]+"
+      - "*-konnecthub*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: release x86_64-unknown-linux-gnu simdutf
+    runs-on: ubuntu-22.04
+    timeout-minutes: 180
+    env:
+      TARGET: x86_64-unknown-linux-gnu
+      V8_FROM_SOURCE: true
+      RUSTFLAGS: -D warnings
+      # Resolve the release tag from either the pushed tag or the manual input.
+      RELEASE_TAG: ${{ github.event_name == 'push' && github.ref_name || github.event.inputs.tag }}
+    steps:
+      - name: Free up disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+            /usr/local/share/boost "$AGENT_TOOLSDIRECTORY" || true
+          df -h /
+
+      - name: Configure git
+        run: git config --global core.symlinks true
+
+      - name: Clone repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 10
+          submodules: recursive
+
+      - name: Install rust
+        uses: dsherret/rust-toolchain-file@v1
+
+      - name: Install python
+        uses: actions/setup-python@v5
+        with:
+          python-version: 3.11.x
+          architecture: x64
+
+      - name: Write git_submodule_status.txt
+        run: git submodule status --recursive > git_submodule_status.txt
+
+      - name: Cache
+        uses: actions/cache@v4
+        with:
+          path: |-
+            target/sccache
+            target/*/.*
+            target/*/build
+            target/*/deps
+          key: konnecthub-${{ env.TARGET }}-release-simdutf-${{ hashFiles('Cargo.lock', 'build.rs', 'git_submodule_status.txt') }}
+          restore-keys: konnecthub-${{ env.TARGET }}-release-simdutf-
+
+      - name: Install and start sccache
+        env:
+          SCCACHE_DIR: ${{ github.workspace }}/target/sccache
+          SCCACHE_CACHE_SIZE: 1G
+          SCCACHE_IDLE_TIMEOUT: 0
+        run: |
+          version="v0.8.2"
+          basename="sccache-$version-x86_64-unknown-linux-musl"
+          curl -LO "https://github.com/mozilla/sccache/releases/download/$version/$basename.tar.gz"
+          tar -xzf "$basename.tar.gz"
+          "./$basename/sccache" --start-server
+          echo "$(pwd)/$basename" >> "$GITHUB_PATH"
+
+      - name: Install Clang 19
+        run: |
+          echo "deb http://apt.llvm.org/jammy/ llvm-toolchain-jammy-19 main" | sudo dd of=/etc/apt/sources.list.d/llvm-toolchain-jammy-19.list
+          curl https://apt.llvm.org/llvm-snapshot.gpg.key | gpg --dearmor | sudo dd of=/etc/apt/trusted.gpg.d/llvm-snapshot.gpg
+          sudo apt-get update
+          sudo apt-get -qq remove 'clang-*' || true
+          sudo apt-get install lld-19 clang-19 clang-tools-19 libclang-19-dev -y
+          echo "LIBCLANG_PATH=/usr/lib/llvm-19/lib" >> "$GITHUB_ENV"
+
+      - name: Build (release, simdutf, from source)
+        env:
+          SCCACHE_IDLE_TIMEOUT: 0
+        run: cargo build -vv --release --locked --target "$TARGET" --features simdutf
+
+      - name: Package artifacts
+        run: |
+          OUT="target/$TARGET/release/gn_out"
+          LIB="librusty_v8_simdutf_release_${TARGET}.a.gz"
+          BIND="src_binding_simdutf_release_${TARGET}.rs"
+          gzip -9c "$OUT/obj/librusty_v8.a" > "target/$LIB"
+          cp "$OUT/src_binding.rs" "target/$BIND"
+          ls -l "target/$LIB" "target/$BIND"
+          echo "LIB=$LIB" >> "$GITHUB_ENV"
+          echo "BIND=$BIND" >> "$GITHUB_ENV"
+
+      - name: Publish to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.RELEASE_TAG }}
+          name: ${{ env.RELEASE_TAG }}
+          fail_on_unmatched_files: true
+          files: |
+            target/${{ env.LIB }}
+            target/${{ env.BIND }}
