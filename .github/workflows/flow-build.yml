@@ -1,4 +1,4 @@
-name: konnecthub-build
+name: flow-build
 
 # Builds the patched (v8::Locker) rusty_v8 static library for the linux-x64
 # targets the flow / edge-runtime needs — release, simdutf — and publishes each
@@ -28,9 +28,9 @@ on:
   push:
     tags:
       # `v149.4.0` (matches the crate version → RUSTY_V8_MIRROR path) and any
-      # explicit konnecthub-suffixed tag for one-off builds.
+      # explicit flow-suffixed tag for one-off builds.
       - "v[0-9]+.[0-9]+.[0-9]+"
-      - "*-konnecthub*"
+      - "*-flow*"
 
 permissions:
   contents: write
@@ -97,8 +97,8 @@ jobs:
             target/*/.*
             target/*/build
             target/*/deps
-          key: konnecthub-${{ env.TARGET }}-release-simdutf-${{ hashFiles('Cargo.lock', 'build.rs', 'git_submodule_status.txt') }}
-          restore-keys: konnecthub-${{ env.TARGET }}-release-simdutf-
+          key: flow-${{ env.TARGET }}-release-simdutf-${{ hashFiles('Cargo.lock', 'build.rs', 'git_submodule_status.txt') }}
+          restore-keys: flow-${{ env.TARGET }}-release-simdutf-
 
       - name: Install and start sccache
         env:

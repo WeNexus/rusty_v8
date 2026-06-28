@@ -20,7 +20,7 @@ impl<'a> Locker<'a> {
       _lock: raw::Locker::new(isolate),
       locked: isolate,
     };
-    // NOTE(konnecthub v149 port): rusty_v8 v149 removed the slot-based
+    // NOTE(flow v149 port): rusty_v8 v149 removed the slot-based
     // `ScopeData` root mechanism (`ScopeData::new_root`/`drop_root`) that the
     // original v130 patch relied on here. In v149 `HandleScope::new`
     // constructs a scope directly from the isolate (see the `NewHandleScope`
