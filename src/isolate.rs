@@ -2346,18 +2346,12 @@ impl Drop for OwnedIsolate {
         snapshot_creator.is_none(),
         "If isolate was created using v8::Isolate::snapshot_creator, you should use v8::OwnedIsolate::create_blob before dropping an isolate."
       );
-      // NOTE(konnecthub v149 port): when the isolate is shared across threads
-      // via `crate::Locker`, it is entered/exited by the locker rather than by
-      // this owner, so it may not be the current isolate on the dropping
-      // thread. Only assert currency and exit when no locker is active.
-      if !crate::Locker::is_locked(self) {
-        // Safety: We need to check `this == Isolate::GetCurrent()` before calling exit()
-        assert!(
-          std::ptr::eq(self.cxx_isolate.as_mut(), v8__Isolate__GetCurrent()),
-          "v8::OwnedIsolate instances must be dropped in the reverse order of creation. They are entered upon creation and exited upon being dropped."
-        );
-        self.exit();
-      }
+      // Safety: We need to check `this == Isolate::GetCurrent()` before calling exit()
+      assert!(
+        std::ptr::eq(self.cxx_isolate.as_mut(), v8__Isolate__GetCurrent()),
+        "v8::OwnedIsolate instances must be dropped in the reverse order of creation. They are entered upon creation and exited upon being dropped."
+      );
+      self.exit();
       let (annex_ptr, _create_param_allocations) =
         self.prepare_annex_for_dispose();
       // Drain finalizers registered up to this point, before V8's final
