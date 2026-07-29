@@ -1,6 +1,6 @@
 [package]
 name = "v8"
-version = "149.4.0"
+version = "150.4.0"
 description = "Rust bindings to V8"
 readme = "README.md"
 authors = ["the Deno authors"]
@@ -149,6 +149,16 @@ path = "build.rs"
 [[bench]]
 name = "function"
 path = "benches/function.rs"
+harness = false
+
+[[bench]]
+name = "string_read"
+path = "benches/string_read.rs"
+harness = false
+
+[[bench]]
+name = "string_encode"
+path = "benches/string_encode.rs"
 harness = false
 
 [workspace]

@@ -1,6 +1,6 @@
 # Rusty V8 Binding
 
-V8 Version: 14.9.207.2
+V8 Version: 15.0.245.2
 
 [![ci](https://github.com/denoland/rusty_v8/workflows/ci/badge.svg?branch=main)](https://github.com/denoland/rusty_v8/actions)
 [![crates](https://img.shields.io/crates/v/v8.svg)](https://crates.io/crates/v8)
@@ -143,6 +143,18 @@ V8_FROM_SOURCE=1 cargo build -vv --target aarch64-linux-android
 # or with cross
 docker build --build-arg CROSS_BASE_IMAGE=ghcr.io/cross-rs/aarch64-linux-android:0.2.5 -t cross-rusty_v8:aarch64-linux-android .
 V8_FROM_SOURCE=1 cross build -vv --target aarch64-linux-android
+```
+
+For iOS builds: cross compile from an arm64 macOS host. The simulator target
+keeps the JIT; the device target (`aarch64-apple-ios`) is built jitless, since
+iOS denies the JIT entitlement to non-WebKit apps (WebAssembly is also disabled
+in this configuration). `build.rs` selects these settings automatically per
+target — no extra GN args required:
+
+```bash
+rustup target add aarch64-apple-ios-sim  # simulator
+rustup target add aarch64-apple-ios      # device (jitless)
+V8_FROM_SOURCE=1 cargo build -vv --target aarch64-apple-ios-sim
 ```
 
 The build depends on several binary tools: `gn`, `ninja` and `clang`. The tools

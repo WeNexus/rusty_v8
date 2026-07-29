@@ -159,6 +159,10 @@ void v8__V8__SetFatalErrorHandler(v8::V8FatalErrorCallback that) {
   v8::V8::SetFatalErrorHandler(that);
 }
 
+bool v8__V8__EnableWebAssemblyTrapHandler(bool use_v8_signal_handler) {
+  return v8::V8::EnableWebAssemblyTrapHandler(use_v8_signal_handler);
+}
+
 v8::Isolate* v8__Isolate__New(const v8::Isolate::CreateParams& params) {
   return v8::Isolate::New(params);
 }
@@ -1390,22 +1394,6 @@ void v8__String__ValueView__CONSTRUCT(uninit_t<v8::String::ValueView>* buf,
 
 void v8__String__ValueView__DESTRUCT(v8::String::ValueView* self) {
   self->~ValueView();
-}
-
-bool v8__String__ValueView__is_one_byte(const v8::String::ValueView& self) {
-  return self.is_one_byte();
-}
-
-const void* v8__String__ValueView__data(const v8::String::ValueView& self) {
-  if (self.is_one_byte()) {
-    return reinterpret_cast<const void*>(self.data8());
-  } else {
-    return reinterpret_cast<const void*>(self.data16());
-  }
-}
-
-int v8__String__ValueView__length(const v8::String::ValueView& self) {
-  return self.length();
 }
 
 const v8::Symbol* v8__Symbol__New(v8::Isolate* isolate,

@@ -212,6 +212,40 @@ fn build_binding() {
         clang_args.push(format!("-isystem{}/include", resource_dir.trim()));
       }
     }
+    // Parse the V8 headers against the musl sysroot. bindgen already targets
+    // the musl triple (from $TARGET), so without this it looks for the target
+    // arch's glibc multiarch headers, which aren't installed when cross-
+    // compiling (e.g. aarch64 glibc headers on an x86_64 runner).
+    let target_env = env::var("CARGO_CFG_TARGET_ENV").unwrap_or_default();
+    if target_env == "musl"
+      && let Ok(sysroot) = env::var("RUSTY_V8_MUSL_SYSROOT")
+    {
+      clang_args.push(format!("--sysroot={sysroot}"));
+    }
+  } else if target_os == "ios" {
+    // iOS: point bindgen at the iOS (device) or iOS-simulator SDK and set the
+    // matching clang target triple so the V8 headers parse correctly.
+    let target_triple = env::var("TARGET").unwrap();
+    let is_sim = target_triple.ends_with("-sim")
+      || target_triple.starts_with("x86_64-apple-ios");
+    let sdk = if is_sim {
+      "iphonesimulator"
+    } else {
+      "iphoneos"
+    };
+    let output = Command::new("xcrun")
+      .args(["--sdk", sdk, "--show-sdk-path"])
+      .output()
+      .unwrap();
+    let sdk_path = String::from_utf8(output.stdout).unwrap();
+    clang_args.push("-isysroot".to_string());
+    clang_args.push(sdk_path.trim().to_string());
+    let clang_target = if is_sim {
+      "arm64-apple-ios-simulator"
+    } else {
+      "arm64-apple-ios"
+    };
+    clang_args.push(format!("--target={clang_target}"));
   }
 
   let bindings = bindgen::Builder::default()
@@ -389,6 +423,69 @@ fn build_v8(is_asan: bool) {
     maybe_install_sysroot("i386");
     maybe_install_sysroot("arm");
   }
+  if target_arch == "riscv64" {
+    gn_args.push(r#"target_cpu="riscv64""#.to_string());
+    // Cross compiling needs to set v8_target_cpu
+    gn_args.push(r#"v8_target_cpu="riscv64""#.to_string());
+    if target_os == "linux" {
+      gn_args.push("use_sysroot=true".to_string());
+      maybe_install_sysroot("riscv64");
+      maybe_install_sysroot("amd64");
+    }
+  }
+
+  // musl libc. V8's build targets glibc by default; the vendored build config
+  // grows a target-scoped `use_musl` arg (see //build/config/rust.gni,
+  // sysroot.gni, c++/BUILD.gn, toolchain/*). The final librusty_v8.a is a
+  // static archive of musl-compiled objects (never linked here), so the target
+  // toolchain needs only musl headers -- the executable build tools (torque,
+  // mksnapshot, code generators) are built with a separate glibc toolchain so
+  // they link and run on the (glibc) build host.
+  let target_env = env::var("CARGO_CFG_TARGET_ENV").unwrap_or_default();
+  if target_env == "musl" && target_os == "linux" {
+    gn_args.push("use_musl=true".to_string());
+    // V8-as-a-library has no glib dependency; skip it so a musl target_sysroot
+    // doesn't send pkg-config looking for glib inside the sysroot.
+    gn_args.push("use_glib=false".to_string());
+    // Build libstd + V8's internal Rust crates from source for the musl triple;
+    // V8's vendored Rust toolchain only ships a glibc host std.
+    gn_args.push("rust_prebuilt_stdlib=false".to_string());
+    // Some V8 sources have glibc-only code paths (e.g. execinfo-based
+    // backtraces in stack_trace_posix.cc) whose helpers are unused on musl,
+    // tripping -Werror,-Wunused-const-variable. Like the iOS/Android cross
+    // builds, don't treat warnings as errors here.
+    gn_args.push("treat_warnings_as_errors=false".to_string());
+
+    match target_arch.as_str() {
+      "x86_64" => {
+        // Host cpu == target cpu, so V8 would build the executable build tools
+        // with the (musl) default toolchain. Force the host and snapshot
+        // toolchains to a dedicated glibc toolchain so those tools stay glibc.
+        let glibc = "//build/toolchain/linux:clang_x64_glibc";
+        gn_args.push(format!("host_toolchain=\"{glibc}\""));
+        gn_args.push(format!("v8_snapshot_toolchain=\"{glibc}\""));
+        // That glibc toolchain builds against the amd64 sysroot, same as the
+        // host side of the aarch64/riscv64 cross builds.
+        maybe_install_sysroot("amd64");
+      }
+      "aarch64" => {
+        // Cross build (x64 host -> arm64 target). The host (clang_x64) and
+        // snapshot (clang_x64_v8_arm64) toolchains are already non-default, so
+        // the target-scoped `use_musl` guard keeps them glibc automatically --
+        // no toolchain overrides needed. target_cpu and the amd64/arm64
+        // sysroots are set by the aarch64 cross-compilation block above.
+      }
+      other => panic!(
+        "musl builds are only supported for x86_64 and aarch64 (got {other})"
+      ),
+    }
+
+    // Cross-compiling on a glibc host needs a musl sysroot for the target's
+    // headers/libs. Native musl builds (e.g. on Alpine) can leave this unset.
+    if let Ok(sysroot) = env::var("RUSTY_V8_MUSL_SYSROOT") {
+      gn_args.push(format!("target_sysroot=\"{sysroot}\""));
+    }
+  }
 
   let target_triple = env::var("TARGET").unwrap();
   // check if the target triple describes a non-native environment
@@ -441,6 +538,34 @@ fn build_v8(is_asan: bool) {
       "./third_party/catapult",
       &format!("{CHROMIUM_URI}/catapult.git"),
     );
+  }
+
+  // iOS / iOS-simulator. iOS denies the JIT entitlement to non-WebKit apps, so
+  // a device build must be jitless -- which in turn requires V8's optimizing
+  // tiers (Sparkplug/Maglev/Turbofan) and WebAssembly to be disabled. The
+  // simulator runs on the host and could keep the JIT, but WebAssembly is
+  // disabled there too because Torque can't generate the Wasm builtins in this
+  // configuration. `target_cpu="arm64"` is already set above for aarch64.
+  // Pass an explicit `target_os="ios"` in GN_ARGS to fully override this.
+  if target_os == "ios" && !gn_args_env.contains(r#"target_os="ios""#) {
+    let is_sim = target_triple.ends_with("-sim")
+      || target_triple.starts_with("x86_64-apple-ios");
+    gn_args.push(r#"target_os="ios""#.to_string());
+    gn_args.push(format!(
+      r#"target_environment="{}""#,
+      if is_sim { "simulator" } else { "device" }
+    ));
+    gn_args.push(r#"ios_deployment_target="14.0""#.to_string());
+    gn_args.push("ios_enable_code_signing=false".to_string());
+    gn_args.push("treat_warnings_as_errors=false".to_string());
+    gn_args.push("v8_enable_webassembly=false".to_string());
+    if !is_sim {
+      // Device: no JIT permitted -> jitless build, all tiers off.
+      gn_args.push("v8_jitless=true".to_string());
+      gn_args.push("v8_enable_sparkplug=false".to_string());
+      gn_args.push("v8_enable_maglev=false".to_string());
+      gn_args.push("v8_enable_turbofan=false".to_string());
+    }
   }
 
   if target_triple.starts_with("i686-") {
@@ -676,8 +801,10 @@ fn download_file(url: &str, filename: &Path) {
          const file = await Deno.open(path, { write: true, create: true }); \
          await resp.body.pipeTo(file.writable);",
       )
-      .arg("--allow-net")
-      .arg("--allow-write")
+      // Note: `deno eval` runs with all permissions implicitly granted and does
+      // not accept `--allow-*` flags, so passing them here makes `deno eval`
+      // error out ("unexpected argument '--allow-net'") and the download
+      // silently falls back to Python/curl.
       .arg("--")
       .arg(url)
       .arg(&tmpfile)
@@ -721,7 +848,14 @@ fn download_file(url: &str, filename: &Path) {
   };
 
   // Assert DL was successful
-  assert!(status.success());
+  if !status.success() {
+    panic!(
+      "Failed to download V8 prebuilt archive from {url}\n\
+     This is usually because no prebuilt archive is published for your target, \
+     in which case you should compile V8 from source by setting V8_FROM_SOURCE=1. \
+     It can also indicate a network connectivity problem."
+    );
+  }
   assert!(tmpfile.exists());
 
   // Write checksum (i.e url) & move file
