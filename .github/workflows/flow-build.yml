@@ -1,33 +1,32 @@
 name: flow-build
 
 # Builds the patched (v8::Locker) rusty_v8 static library for the linux-x64
-# targets the flow / edge-runtime needs — release, simdutf — and publishes each
+# target the flow / edge-runtime needs — release, simdutf — and publishes it
 # (plus the matching src_binding.rs) as a GitHub Release asset.
 #
 #   * x86_64-unknown-linux-gnu   -> normal Linux (glibc)
-#   * x86_64-unknown-linux-musl  -> Alpine (musl)
 #
 # Feature set matches Deno v2.9.0's pin:
 #   v8 = { version = "149.4.0", default-features = false, features = ["simdutf"] }
 #
-# The release MUST be tagged `v{crate-version}` (i.e. `v149.4.0`) so that the
+# The release MUST be tagged `v{crate-version}` (i.e. `v150.4.0`) so that the
 # rusty_v8 build script can find the assets via RUSTY_V8_MIRROR. Consume from
 # the embedder with a single env var (no local V8 source build, no manual
-# src_binding handling — build.rs auto-downloads both from {mirror}/v149.4.0/):
+# src_binding handling — build.rs auto-downloads both from {mirror}/v150.4.0/):
 #   RUSTY_V8_MIRROR=https://github.com/<owner>/rusty_v8/releases/download
 # (build.rs fetches librusty_v8_simdutf_release_<target>.a.gz and the matching
-#  src_binding_simdutf_release_<target>.rs from that base + /v149.4.0/.)
+#  src_binding_simdutf_release_<target>.rs from that base + /v150.4.0/.)
 
 on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Release tag to create/update (must be v<crate-version>, e.g. v149.4.0)"
+        description: "Release tag to create/update (must be v<crate-version>, e.g. v150.4.0)"
         required: true
-        default: "v149.4.0"
+        default: "v150.4.0"
   push:
     tags:
-      # `v149.4.0` (matches the crate version → RUSTY_V8_MIRROR path) and any
+      # `v150.4.0` (matches the crate version → RUSTY_V8_MIRROR path) and any
       # explicit flow-suffixed tag for one-off builds.
       - "v[0-9]+.[0-9]+.[0-9]+"
       - "*-flow*"
@@ -46,12 +45,6 @@ jobs:
         config:
           # Normal Linux (glibc).
           - target: x86_64-unknown-linux-gnu
-            musl: false
-          # Alpine (musl). Built from the x86_64 host with the musl cross
-          # toolchain; V8's prebuilt host clang/gn/ninja are x86_64 so the host
-          # arch is unchanged — only the C/C++/Rust target libc differs.
-          - target: x86_64-unknown-linux-musl
-            musl: true
     env:
       TARGET: ${{ matrix.config.target }}
       V8_FROM_SOURCE: true
@@ -121,13 +114,6 @@ jobs:
           sudo apt-get -qq remove 'clang-*' || true
           sudo apt-get install lld-19 clang-19 clang-tools-19 libclang-19-dev -y
           echo "LIBCLANG_PATH=/usr/lib/llvm-19/lib" >> "$GITHUB_ENV"
-
-      - name: Install musl toolchain
-        if: ${{ matrix.config.musl }}
-        run: |
-          sudo apt-get install -y musl-tools musl-dev
-          # Cargo linker for the musl target.
-          echo "CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=musl-gcc" >> "$GITHUB_ENV"
 
       - name: Build (release, simdutf, from source)
         env:
