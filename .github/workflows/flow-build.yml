@@ -47,39 +47,57 @@ permissions:
   contents: write
 
 jobs:
+  # Selects which targets to build. A tag push always builds every target; a
+  # manual dispatch can narrow to one, because republishing a target swaps both
+  # its lib and its src_binding at the same URLs, and an embedder holding a
+  # cached copy of only one of the pair gets an ABI mismatch (which segfaults at
+  # runtime, not at link time). So when you only need to ADD a target, build
+  # just that target. This has to be a separate job: a job-level `if:` cannot
+  # reference `matrix`, so the filtering happens before the matrix exists.
+  #
+  # GN emits `obj/librusty_v8.a` on unix and `obj/rusty_v8.lib` on Windows;
+  # build.rs's static_lib_name() expects the published asset to keep that
+  # platform name, hence the per-target lib/ext. Windows uses V8's own bundled
+  # clang and links the static CRT, which is what flow's `+crt-static` rustflag
+  # needs.
+  setup:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.pick.outputs.matrix }}
+    steps:
+      - name: Pick targets
+        id: pick
+        shell: bash
+        env:
+          TARGET_FILTER: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.target || 'all' }}
+        run: |
+          all='[
+            {"target":"x86_64-unknown-linux-gnu","runner":"ubuntu-22.04","lib":"librusty_v8","ext":"a"},
+            {"target":"x86_64-pc-windows-msvc","runner":"windows-2022","lib":"rusty_v8","ext":"lib"}
+          ]'
+          if [ "$TARGET_FILTER" = "all" ]; then
+            matrix="$(echo "$all" | jq -c .)"
+          else
+            matrix="$(echo "$all" | jq -c --arg t "$TARGET_FILTER" '[.[] | select(.target == $t)]')"
+          fi
+          if [ "$(echo "$matrix" | jq 'length')" -eq 0 ]; then
+            echo "no target matches '$TARGET_FILTER'" >&2
+            exit 1
+          fi
+          echo "building: $(echo "$matrix" | jq -r 'map(.target) | join(", ")')"
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+
   build:
     name: release ${{ matrix.config.target }} simdutf
+    needs: setup
     runs-on: ${{ matrix.config.runner }}
-    # A tag push always builds every target. A manual dispatch can narrow to
-    # one: republishing a target swaps both its lib and its src_binding at the
-    # same URLs, and an embedder holding a cached copy of only one of the pair
-    # gets an ABI mismatch (segfaults at runtime, not at link time). So when
-    # you only need to ADD a target, build just that target.
-    if: >-
-      github.event_name != 'workflow_dispatch' ||
-      github.event.inputs.target == 'all' ||
-      github.event.inputs.target == matrix.config.target
     timeout-minutes: 240
     strategy:
       # One target failing must not cancel the other: a published Linux asset
       # is still useful on its own.
       fail-fast: false
       matrix:
-        config:
-          # Normal Linux (glibc).
-          - target: x86_64-unknown-linux-gnu
-            runner: ubuntu-22.04
-            # GN emits `obj/librusty_v8.a` on unix, `obj/rusty_v8.lib` on
-            # Windows; build.rs's static_lib_name() expects the asset to keep
-            # that platform name.
-            lib: librusty_v8
-            ext: a
-          # Windows (MSVC). V8's GN build brings its own clang and links the
-          # static CRT, which is what flow's `+crt-static` rustflag needs.
-          - target: x86_64-pc-windows-msvc
-            runner: windows-2022
-            lib: rusty_v8
-            ext: lib
+        config: ${{ fromJson(needs.setup.outputs.matrix) }}
     defaults:
       run:
         # git bash on the Windows runner, so one script works on both.
